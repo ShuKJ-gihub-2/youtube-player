@@ -18,121 +18,109 @@
   function parseYouTubeId(url){
     if(!url) return null;
     url = url.trim();
-    // plain id
     if(/^[A-Za-z0-9_-]{11}$/.test(url)) return url;
     try{
-      // add protocol if missing
       if(!/^https?:\/\//i.test(url)) url = 'https://'+url;
       const u = new URL(url);
-      // youtu.be short
       if(u.hostname === 'youtu.be') return u.pathname.slice(1);
-      // youtube.com domain
       if(u.hostname.endsWith('youtube.com') || u.hostname.endsWith('youtube-nocookie.com')){
-        // /embed/ID
         const emb = u.pathname.match(/\/embed\/([A-Za-z0-9_-]{11})/);
         if(emb) return emb[1];
-        // v= or list/watch?v=
         const v = u.searchParams.get('v');
         if(v && /^[A-Za-z0-9_-]{11}$/.test(v)) return v;
-        // /v/ID format
         const p = u.pathname.match(/\/v\/([A-Za-z0-9_-]{11})/);
         if(p) return p[1];
       }
     }catch(e){}
-    // fallback: try to find 11-char id in string
     const m = url.match(/([A-Za-z0-9_-]{11})/);
     return m ? m[1] : null;
   }
 
-  async function playId(id){
-    if(!id) { alert('YouTube ID を解析できませんでした'); return; }
-    // Prefer existing ry player if exposed
-    if(window.__RY_PLAYER && window.__RY_PLAYER.player){
-      const p = window.__RY_PLAYER.player;
-      try{
-        if(typeof p.loadVideoById === 'function'){
-          p.loadVideoById(id);
-          // ensure overlay hidden
-          window.__RY_PLAYER.hideEndOverlay?.();
-          return;
-        }
-      }catch(e){}
-    }
-    // Otherwise, try to use global YT Player created by our earlier script
-    if(window.YT && window.YT.Player && window.ry_player_created){
-      try{
-        const p = window.ry_player_created;
-        if(p && typeof p.loadVideoById === 'function'){ p.loadVideoById(id); return; }
-      }catch(e){}
-    }
-    // If no player exists, set ?v= and reload to let the integration pick it up,
-    // or create a minimal iframe player here.
-    // Try to create minimal iframe API player in #player if present
-    const container = document.getElementById('player');
-    if(container){
-      // remove existing placeholder holder if any
-      let holder = document.getElementById('ry_yt_holder');
-      if(!holder){
-        holder = document.createElement('div'); holder.id = 'ry_yt_holder';
-        container.insertBefore(holder, container.firstChild);
-      } else { holder.innerHTML = ''; }
-      // ensure YT API loaded
-      if(!window.YT || !window.YT.Player){
-        // load API once
-        if(!document.getElementById('ry-yt-api')) {
-          const s = document.createElement('script');
-          s.id = 'ry-yt-api'; s.src = 'https://www.youtube.com/iframe_api';
-          document.head.appendChild(s);
-        }
-        // wait for API ready
-        window.onYouTubeIframeAPIReady = function(){
-          createTempPlayer(id);
-        };
-      } else {
-        createTempPlayer(id);
-      }
-      return;
-    }
-    // fallback: set URL param and reload
-    const u = new URL(location.href);
-    u.searchParams.set('v', id);
-    location.href = u.toString();
-  }
-
-  function createTempPlayer(id){
-    try{
-      // guard: if ry integration already created, don't stomp it
-      if(window.__RY_PLAYER && window.__RY_PLAYER.player) {
-        window.__RY_PLAYER.player.loadVideoById(id);
+  function ensureYouTubeApiLoaded(){
+    return new Promise((resolve) => {
+      if(window.YT && window.YT.Player) return resolve();
+      // queue callbacks instead of overwriting
+      const cbName = '__ry_on_youtube_ready__';
+      if(window[cbName]) {
+        // someone else already created queue; push resolver
+        window[cbName]._q = window[cbName]._q || [];
+        window[cbName]._q.push(resolve);
         return;
       }
-      const holder = document.getElementById('ry_yt_holder') || (function(){
-        const c = document.getElementById('player') || document.body;
-        const d = document.createElement('div'); d.id = 'ry_yt_holder'; c.insertBefore(d, c.firstChild); return d;
-      })();
-      // store created instance globally
-      window.ry_player_created = new YT.Player('ry_yt_holder', {
-        width:'100%', height:'100%', videoId: id,
-        playerVars: { controls:1, rel:1, modestbranding:0, enablejsapi:1, origin: location.origin }
-      });
-    }catch(e){ console.warn(e); }
+      // create queue function
+      window[cbName] = function(){
+        (window[cbName]._q || []).forEach(fn => { try{ fn(); }catch(e){} });
+        try{ resolve(); }catch(e){}
+      };
+      window[cbName]._q = [resolve];
+      // install adapter that calls our queue when API ready
+      const prev = window.onYouTubeIframeAPIReady;
+      window.onYouTubeIframeAPIReady = function(){
+        if(typeof prev === 'function') try{ prev(); }catch(e){}
+        try{ window[cbName](); }catch(e){}
+      };
+      // inject API script if not present
+      if(!document.getElementById('ry-yt-api')){
+        const s = document.createElement('script');
+        s.id = 'ry-yt-api';
+        s.src = 'https://www.youtube.com/iframe_api';
+        document.head.appendChild(s);
+      }
+    });
+  }
+
+  async function playId(id){
+    if(!id) { alert('YouTube ID を解析できませんでした'); return; }
+
+    // 1) If the site integration exposed a player, use it
+    if(window.__RY_PLAYER && window.__RY_PLAYER.player){
+      const p = window.__RY_PLAYER.player;
+      try{ if(typeof p.loadVideoById === 'function'){ p.loadVideoById(id); return; } }catch(e){}
+    }
+
+    // 2) If a global created instance exists, use it (compat)
+    if(window.__RY_PLAYER && window.__RY_PLAYER.loadIndex){
+      try{ window.__RY_PLAYER.loadIndex(0); }catch(e){} // best-effort; skip
+    }
+
+    // 3) Otherwise create (or reuse) a temporary YT player in #player
+    const container = document.getElementById('player') || document.body;
+    let holder = document.getElementById('ry_yt_holder');
+    if(!holder){
+      holder = document.createElement('div');
+      holder.id = 'ry_yt_holder';
+      holder.style.width = '100%';
+      holder.style.height = '100%';
+      // insert at top of player container so UI overlays still work
+      container.insertBefore(holder, container.firstChild);
+    } else {
+      holder.innerHTML = '';
+    }
+
+    await ensureYouTubeApiLoaded();
+    // if an existing created instance is present, prefer updating it
+    if(window.__RY_TEMP_PLAYER && window.__RY_TEMP_PLAYER.loadVideoById){
+      try{ window.__RY_TEMP_PLAYER.loadVideoById(id); return; }catch(e){}
+    }
+    // create new player
+    window.__RY_TEMP_PLAYER = new YT.Player('ry_yt_holder', {
+      width: '100%', height: '100%', videoId: id,
+      playerVars: { controls: 1, rel: 1, modestbranding: 0, enablejsapi:1, origin: location.origin }
+    });
   }
 
   function handlePlay(){
     const id = parseYouTubeId(input.value || '');
-    if(id) playId(id);
-    else alert('URL を確認してください');
+    if(!id){ alert('URL を確認してください'); return; }
+    playId(id);
   }
 
   btn.addEventListener('click', handlePlay);
   input.addEventListener('keydown', function(e){ if(e.key === 'Enter'){ e.preventDefault(); handlePlay(); } });
 
-  // optional: if page URL has ?v=VIDEO, prefill input
+  // prefill from ?v= if present
   (function prefill(){
-    try{
-      const p = new URL(location.href).searchParams.get('v');
-      if(p){ input.value = 'https://www.youtube.com/watch?v=' + p; }
-    }catch(e){}
+    try{ const p = new URL(location.href).searchParams.get('v'); if(p) input.value = 'https://www.youtube.com/watch?v=' + p; }catch(e){}
   })();
 })();
 </script>
