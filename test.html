@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>YouTube Player Video</title>
+  <meta name="viewport" content="width=728">
+  <style>
+    #player {
+      width: 728px;
+      height: 409px;
+      margin: 0 auto;
+      background: #000;
+    }
+    body {
+      background: #222;
+      color: #fff;
+      font-family: sans-serif;
+      text-align: center;
+      margin: 40px 0;
+    }
+    input[type="text"] {
+      width: 350px;
+      font-size: 1.1em;
+      padding: 6px;
+      margin: 16px 0 0 0;
+    }
+    button {
+      font-size: 1.1em;
+      padding: 6px 16px;
+      margin-left: 10px;
+    }
+  </style>
+</head>
+<body>
+  <h1>YouTube Player Video</h1>
+  <form onsubmit="onSubmit(event)">
+    <input id="yturl" type="text" value="" placeholder="YouTubeのURLまたはID">
+    <button>再生</button>
+  </form>
+  <div id="player"></div>
+  <script>
+    // YouTubeの動画IDを抽出
+    function extractId(url) {
+      try {
+        const u = new URL(url);
+        const emb = u.pathname.match(/\/embed\/([A-Za-z0-9_-]{11})/);
+        if(emb) return emb[1];
+        const v = u.searchParams.get('v');
+        if(v && /^[A-Za-z0-9_-]{11}$/.test(v)) return v;
+        const p = u.pathname.match(/\/v\/([A-Za-z0-9_-]{11})/);
+        if(p) return p[1];
+      } catch(e){}
+      const m = url.match(/([A-Za-z0-9_-]{11})/);
+      return m ? m[1] : null;
+    }
+
+    // YouTube API読み込み
+    function ensureYouTubeApiLoaded(){
+      return new Promise((resolve) => {
+        if(window.YT && window.YT.Player) return resolve();
+        window.onYouTubeIframeAPIReady = resolve;
+        if(!document.getElementById('yt-api')) {
+          const s = document.createElement('script');
+          s.id = 'yt-api';
+          s.src = 'https://www.youtube.com/iframe_api';
+          document.head.appendChild(s);
+        }
+      });
+    }
+
+    // プレイヤー生成＆再生
+    let ytPlayer = null;
+    async function playId(id){
+      if(!id) { alert('YouTube ID を解析できませんでした'); return; }
+      // 既存のiframe削除
+      document.getElementById('player').innerHTML = '';
+      await ensureYouTubeApiLoaded();
+      ytPlayer = new YT.Player('player', {
+        width: 728,
+        height: 409,
+        videoId: id,
+        playerVars: {
+          enablejsapi: 1,
+          autoplay: 1,
+          rel: 0,
+          controls: 1,
+          loop: 1,
+          playlist: id // ループ再生時はplaylist必須
+        },
+        events: {}
+      });
+    }
+
+    // フォーム送信時
+    function onSubmit(e){
+      e.preventDefault();
+      const val = document.getElementById('yturl').value.trim();
+      const id = extractId(val);
+      playId(id);
+    }
+  </script>
+</body>
+</html>
